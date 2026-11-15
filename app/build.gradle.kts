@@ -52,6 +52,7 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".byd"
             ndk { abiFilters += allAbis }
         }
         release {
