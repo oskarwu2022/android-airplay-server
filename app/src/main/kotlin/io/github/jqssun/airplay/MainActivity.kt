@@ -10,6 +10,10 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.net.Uri
+import android.provider.Settings
+import android.view.Surface
+import android.widget.Toast
 import android.util.Rational
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -28,6 +32,7 @@ import io.github.jqssun.airplay.ui.theme.AirPlayTheme
 import io.github.jqssun.airplay.viewmodel.LocalNetworkAccess
 import io.github.jqssun.airplay.viewmodel.MainViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -37,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
     private var service: AirPlayService? = null
+    private var aspectUpdates: Job? = null
+    private var overlay: MirroringOverlay? = null
+    private var mainSurface: Surface? = null
     val isInPip = mutableStateOf(false)
     private val logCallback: (String) -> Unit = { viewModel.addLog(it) }
     private val pinCallback: (String?) -> Unit = { viewModel.showPin(it) }
@@ -44,6 +52,8 @@ class MainActivity : ComponentActivity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val svc = (binder as? AirPlayService.LocalBinder)?.service ?: return
+            aspectUpdates?.cancel()
+            aspectUpdates = lifecycleScope.launch { svc.videoAspect.collect { overlay?.updateAspect(it) } }
             service = svc
             svc.logCallback = logCallback
             svc.pinCallback = pinCallback
@@ -52,6 +62,7 @@ class MainActivity : ComponentActivity() {
             _autoStart()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
+            aspectUpdates?.cancel()
             service = null
             viewModel.unbindService()
         }
@@ -113,9 +124,15 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     viewModel = viewModel,
                     isInPip = isInPip.value,
-                    onSurfaceAvailable = { viewModel.onSurfaceAvailable(it) },
-                    onSurfaceDestroyed = { viewModel.onSurfaceDestroyed(it) },
-                    onPip = { enterPip() },
+                    onSurfaceAvailable = {
+                        mainSurface = it
+                        if (overlay == null) viewModel.onSurfaceAvailable(it)
+                    },
+                    onSurfaceDestroyed = {
+                        if (mainSurface === it) mainSurface = null
+                        viewModel.onSurfaceDestroyed(it)
+                    },
+                    onPip = { if (viewModel.videoPlaybackActive.value) enterPip() else showMirroringOverlay() },
                     onLocalNetwork = ::_requestLocalNetwork
                 )
             }
@@ -167,6 +184,40 @@ class MainActivity : ComponentActivity() {
         _refreshForeground()
     }
 
+    private fun showMirroringOverlay() {
+        if (overlay != null) return
+        if (!Settings.canDrawOverlays(this)) {
+            val settings = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            if (settings.resolveActivity(packageManager) != null) startActivity(settings)
+            else enterPip()
+            return
+        }
+        val window = MirroringOverlay(
+            this,
+            viewModel::onSurfaceAvailable,
+            viewModel::onSurfaceDestroyed
+        ) {
+            closeMirroringOverlay()
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        }
+        overlay = window
+        if (!window.show()) {
+            overlay = null
+            Toast.makeText(this, "车机无法打开悬浮窗，尝试画中画", Toast.LENGTH_SHORT).show()
+            enterPip()
+            return
+        }
+        window.updateAspect(viewModel.videoAspect.value)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setPictureInPictureParams(_pipParams())
+        moveTaskToBack(true)
+    }
+
+    private fun closeMirroringOverlay() {
+        overlay?.close()
+        overlay = null
+        mainSurface?.takeIf { it.isValid }?.let(viewModel::onSurfaceAvailable)
+    }
+
     fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         enterPictureInPictureMode(_pipParams())
@@ -175,7 +226,7 @@ class MainActivity : ComponentActivity() {
     private fun _pipParams(): PictureInPictureParams {
         val aspect = if (viewModel.videoPlaybackActive.value) viewModel.videoPlaybackAspect.value
             else viewModel.videoAspect.value
-        val rational = Rational((aspect * 1000).toInt().coerceIn(1, 2390), 1000)
+        val rational = Rational((aspect * 1000).toInt().coerceIn(419, 2390), 1000)
         val builder = PictureInPictureParams.Builder().setAspectRatio(rational)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(_shouldAutoPip())
@@ -184,7 +235,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun _shouldAutoPip(): Boolean =
-        viewModel.serverState.value == AirPlayService.ServerState.RUNNING &&
+        overlay == null && viewModel.serverState.value == AirPlayService.ServerState.RUNNING &&
             viewModel.connectionCount.value > 0
 
     override fun onUserLeaveHint() {
@@ -208,6 +259,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        overlay?.close()
+        overlay = null
         service?.let {
             if (it.logCallback === logCallback) it.logCallback = null
             if (it.pinCallback === pinCallback) it.pinCallback = null
