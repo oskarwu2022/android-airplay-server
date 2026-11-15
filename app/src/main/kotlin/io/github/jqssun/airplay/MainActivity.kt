@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !_granted(Manifest.permission.POST_NOTIFICATIONS)) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
-            if (!hasLocalNetwork()) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            if (!hasLocalNetwork()) add(LOCAL_NETWORK_PERMISSION)
         }
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
 
@@ -156,8 +156,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun _syncLocalNetwork(requested: Boolean = false) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) return
-        val p = Manifest.permission.ACCESS_LOCAL_NETWORK
+        if (Build.VERSION.SDK_INT < LOCAL_NETWORK_API) return
+        val p = LOCAL_NETWORK_PERMISSION
         val prev = viewModel.localNetwork.value
         val now = when {
             hasLocalNetwork() -> LocalNetworkAccess.GRANTED
@@ -170,11 +170,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun _requestLocalNetwork() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) return
+        if (Build.VERSION.SDK_INT < LOCAL_NETWORK_API) return
         if (viewModel.localNetwork.value == LocalNetworkAccess.SETTINGS) {
             startActivity(appSettingsIntent())
         } else {
-            permissions.launch(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK))
+            permissions.launch(arrayOf(LOCAL_NETWORK_PERMISSION))
         }
     }
 
